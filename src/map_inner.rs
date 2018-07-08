@@ -557,16 +557,17 @@ impl<'guard, 'v: 'guard, K, V, S> MapInner<'v, K,V,S>
         copy_index: usize,
         outer_map: &AtomicBox<Self>,
         guard: &'guard Guard,
-    ) -> NotNull<'guard, Self> {
+    ) -> Option<NotNull<'guard, Self>> {
         let newer_map_shared = self.newer_map.load(&guard);
         if let Some(new_map) = newer_map_shared.as_option() {
             if self.copy_slot(&*new_map, copy_index, outer_map, guard) {
                 self.slots_copied.fetch_add(1, Ordering::SeqCst);
             }
             self.help_copy(new_map, false, outer_map, guard);
-            new_map
+            Some(new_map)
         } else {
-            unreachable!("can't call ensure_slot_copied() unless found a prime value");
+            // unreachable!("can't call ensure_slot_copied() unless found a prime value");
+            None
         }
     }
 
@@ -936,8 +937,10 @@ impl<'guard, 'v: 'guard, K, V, S> MapInner<'v, K,V,S>
                         // We call ensure_slot_copied() even on `SeeNewTable` because it calls
                         // try_promote().
                         &ValueSlot::ValuePrime(_) | &ValueSlot::SeeNewTable => {
-                            return self.ensure_slot_copied(index, outer_map, guard)
-                                .get(key, outer_map, guard)
+                            return self.ensure_slot_copied(index, outer_map, guard).and_then(|map_new| {
+                                map_new.get(key, outer_map, guard)
+                            })
+
                         }
                     }
                 } else {
@@ -1145,9 +1148,9 @@ impl<'guard, 'v: 'guard, K, V, S> MapInner<'v, K,V,S>
             if self.newer_map.relaxed_exists(guard) {
                 // TODO: if newer_map == None AND ((current_value is None AND table full) OR value
                 // is prime) then resize
-                return self.ensure_slot_copied(key_index, outer_map, guard)
-                    .deref()
-                    .put_if_match(key, put, matcher, outer_map, guard);
+                return self.ensure_slot_copied(key_index, outer_map, guard).and_then(|new_map| {
+                    new_map.deref().put_if_match(key, put, matcher, outer_map, guard)
+                });
             }
             debug_assert!(value_slot_option.map_or(true, |v| !v.is_prime()));
             // Otherwise, try to CAS the value.
